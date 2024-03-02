@@ -1,9 +1,18 @@
 import json
 import requests 
 import pandas as pd
+import numpy as np 
+import spacy
+import en_core_web_sm
+import regex as re
+from gensim.models.phrases import Phrases, Phraser
+from time import time  # To time our operations
+from collections import defaultdict  # For word frequency
 
+# Data
 dictionary_inflation = ['CPI', 'deflation', 'inflation','disinflation', 'inflationary', 'recession','stagflation','consumption basket','gas','oil','petrol','fuel','electricity','price','cost','income','revenue','wage','expenditure','payment','rent','purchasing power','tariff','sale']
 
+# Functions
 def items_in_dictionary(dictionary, string):
     for term in dictionary:
         if term in string:
@@ -20,12 +29,19 @@ def download_json(url, destination):
     else:
         print(f"Failed to download JSON file. Status code: {response.status_code}")
 
+def cleaning(doc):
+    txt = [token.lemma_ for token in doc if not token.is_stop]
+    if len(txt) > 2:
+        return ' '.join(txt)
+
 month = "1"
 year = "2022"
 
+# Paths
 json_url = "https://api.nytimes.com/svc/archive/v1/" + year + "/" + month + ".json?api-key=9QigMRakLuhywBq0jduwbEZEyKV3XoiJ"
 output_file = 'output.json'
 
+# Download
 download_json(json_url, output_file)
 
 json_data = open('output.json')
@@ -54,19 +70,64 @@ for idx, doc in enumerate(data["response"]["docs"]):
     except:
         continue
 
-for item in snippets_with_ids:
-    print(f"ID: {item['id']}, Snippet: {item['snippet']}")
+#for item in snippets_with_ids:
+#    print(f"ID: {item['id']}, Snippet: {item['snippet']}")
 
 snippet_df = pd.DataFrame(snippets_with_ids, index = None)
 #print(snippet_df)
 lead_paragraph_df = pd.DataFrame(lead_paragraph_with_ids, index = None)
 abstract_df = pd.DataFrame(abstract_with_ids, index = None)
 
-merge_sn_lp = pd.concat([snippet_df,lead_paragraph_df,abstract_df], axis=1)
-merge_sn_lp = merge_sn_lp.drop(merge_sn_lp.columns[0], axis=1)
-merge_sn_lp = merge_sn_lp.dropna(subset=['snippet', 'lead_paragraph','abstract'], how='all')
+# Clean snippets df
+merge_snippet = pd.concat([snippet_df,abstract_df], axis=1)
+merge_snippet = merge_snippet.drop(merge_snippet.columns[0], axis=1)
+df = merge_snippet.dropna(subset=['snippet', 'abstract'], how='all')
+df=df.drop_duplicates()
+df["abstract"] = np.where((df["snippet"] == df["abstract"]), 0, df["abstract"])
+df["snippet_abs"] = np.where(((df["snippet"] != df["abstract"]) & (df["abstract"]==0)), df["snippet"], df["abstract"])
+df=df.drop(columns=['snippet', 'abstract'])
+# Removing non-alphabetic characters
+df["snippet_abs"]  = df.snippet_abs.str.replace("'", "")
+df["snippet_abs"]  = df.snippet_abs.str.replace("[^A-Za-z']+", " ", regex=True).str.lower()
+print(df["snippet_abs"])
+# Clean lead paragraph df
+lp_df = lead_paragraph_df.drop_duplicates (subset=['lead_paragraph'], keep=False)
+lp_df = lp_df.drop(lp_df.columns[0], axis=1)
+lp_df = lp_df.dropna(subset=['lead_paragraph'], how='all')
+# Removing non-alphabetic characters
+lp_df['lead_paragraph'] = lp_df.lead_paragraph.str.replace("'", "")
+lp_df['lead_paragraph'] = lp_df.lead_paragraph.str.replace("[^A-Za-z']+", " ", regex=True).str.lower()
 
-print(merge_sn_lp)
+# Lemmatazing, removing stopwords
+nlp = spacy.load("en_core_web_sm")
+nlp = en_core_web_sm.load()
 
-#for item in lead_paragraphs_with_ids:
-#    print(f"ID: {item['id']}, Lead_paragraph: {item['lead_paragraph']}")
+# Snippet db
+snippet_abs = [nlp(row) for row in df.snippet_abs]
+snippet_abs_txt = [cleaning(doc) for doc in snippet_abs]
+df_clean = pd.DataFrame({'clean_snippet_abs': snippet_abs_txt})
+df_clean["year"] = year
+df_clean["month"] = month
+df_clean = df_clean.dropna().drop_duplicates() 
+
+# Snippet db
+lead_paragraph = [nlp(row) for row in lp_df.lead_paragraph]
+lead_paragraph_txt = [cleaning(doc) for doc in lead_paragraph]
+lp_df_clean = pd.DataFrame({'clean_lp': lead_paragraph_txt})
+lp_df_clean["year"] = year
+lp_df_clean["month"] = month
+lp_df_clean = lp_df_clean.dropna().drop_duplicates() 
+
+# Detect common phrases (bigrams) from a list of sentences
+row_snippet_abs = [row.split() for row in df_clean['clean_snippet_abs']]
+phrases = Phrases(row_snippet_abs, min_count=30, progress_per=10000)
+bigram = Phraser(phrases)
+sentences = bigram[row_snippet_abs]
+
+# Sanity check
+word_freq = defaultdict(int)
+for sent in sentences:
+    for i in sent:
+        word_freq[i] += 1
+len(word_freq)
+#print(sorted(word_freq, key=word_freq.get, reverse=True)[:10])
