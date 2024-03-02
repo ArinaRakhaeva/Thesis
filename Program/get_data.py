@@ -2,12 +2,16 @@ import json
 import requests 
 import pandas as pd
 import numpy as np 
+
 import spacy
 import en_core_web_sm
 import regex as re
 from gensim.models.phrases import Phrases, Phraser
 from time import time  # To time our operations
 from collections import defaultdict  # For word frequency
+
+import multiprocessing
+from gensim.models import Word2Vec
 
 # Data
 dictionary_inflation = ['CPI', 'deflation', 'inflation','disinflation', 'inflationary', 'recession','stagflation','consumption basket','gas','oil','petrol','fuel','electricity','price','cost','income','revenue','wage','expenditure','payment','rent','purchasing power','tariff','sale']
@@ -78,7 +82,7 @@ snippet_df = pd.DataFrame(snippets_with_ids, index = None)
 lead_paragraph_df = pd.DataFrame(lead_paragraph_with_ids, index = None)
 abstract_df = pd.DataFrame(abstract_with_ids, index = None)
 
-# Clean snippets df
+# Clean dfs
 merge_snippet = pd.concat([snippet_df,abstract_df], axis=1)
 merge_snippet = merge_snippet.drop(merge_snippet.columns[0], axis=1)
 df = merge_snippet.dropna(subset=['snippet', 'abstract'], how='all')
@@ -89,8 +93,8 @@ df=df.drop(columns=['snippet', 'abstract'])
 # Removing non-alphabetic characters
 df["snippet_abs"]  = df.snippet_abs.str.replace("'", "")
 df["snippet_abs"]  = df.snippet_abs.str.replace("[^A-Za-z']+", " ", regex=True).str.lower()
-print(df["snippet_abs"])
-# Clean lead paragraph df
+#print(df["snippet_abs"])
+
 lp_df = lead_paragraph_df.drop_duplicates (subset=['lead_paragraph'], keep=False)
 lp_df = lp_df.drop(lp_df.columns[0], axis=1)
 lp_df = lp_df.dropna(subset=['lead_paragraph'], how='all')
@@ -110,7 +114,7 @@ df_clean["year"] = year
 df_clean["month"] = month
 df_clean = df_clean.dropna().drop_duplicates() 
 
-# Snippet db
+# Lead paragraphs db
 lead_paragraph = [nlp(row) for row in lp_df.lead_paragraph]
 lead_paragraph_txt = [cleaning(doc) for doc in lead_paragraph]
 lp_df_clean = pd.DataFrame({'clean_lp': lead_paragraph_txt})
@@ -131,3 +135,27 @@ for sent in sentences:
         word_freq[i] += 1
 len(word_freq)
 #print(sorted(word_freq, key=word_freq.get, reverse=True)[:10])
+
+# Word2Vec
+cores = multiprocessing.cpu_count()
+
+w2v_model = Word2Vec(min_count=20,
+                     window=2,
+                     vector_size=300,
+                     sample=6e-5, 
+                     alpha=0.03, 
+                     min_alpha=0.0007, 
+                     negative=20,
+                     workers=cores-1)
+# Building vocab for w2v
+t = time()
+w2v_model.build_vocab(sentences, progress_per=10000)
+print('Time to build vocab: {} mins'.format(round((time() - t) / 60, 2)))
+
+# Training the model
+t = time()
+w2v_model.train(sentences, total_examples=w2v_model.corpus_count, epochs=30, report_delay=1)
+print('Time to train the model: {} mins'.format(round((time() - t) / 60, 2)))
+
+# Check 
+print(w2v_model.wv.most_similar(positive=["price"]))
